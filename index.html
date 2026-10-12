@@ -174,9 +174,32 @@ tbody tr:hover{background:#1b1d22}
 <div id="root"></div>
 <div id="modal" hidden></div>
 <div id="toasts" aria-live="polite"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script>
 (function(){
 'use strict';
+/* ====== SUPABASE SETTINGS: paste your own values here ====== */
+const SB_URL='https://mofxlofetpvraeekzxpf.supabase.co',SB_KEY='sb_publishable_q0q4Ef0sXAzuaN91ROR_jw_4n9tKwlL';
+/* =========================================================== */
+
+/* ---------- live sync (Supabase) ---------- */
+const canWrite=()=>!!ui.user&&['admin','commander','officer'].includes(ui.user.role);
+async function pullRow(){const{data,error}=await sb.from('app_state').select('data,version').eq('id',1).single();if(error)throw error;return data}
+function adoptRow(row){let d=row.data;if(!d||!d.ranks){d=seed();fresh=true}S=d;ver=row.version}
+async function push(){if(!sb||!S||!canWrite())return;if(pushing){dirty=true;return}pushing=true;
+ try{const{data,error}=await sb.from('app_state').update({data:S,version:ver+1,updated_at:new Date().toISOString()}).eq('id',1).eq('version',ver).select('version');
+  if(error)throw error;
+  if(!data||!data.length){const row=await pullRow();adoptRow(row);dirty=false;render();toast(_('Someone else saved at the same time. The latest data was loaded, so please repeat your last change.','شخص آخر حفظ في نفس الوقت. تم تحميل أحدث البيانات، فأعد آخر تغيير.'),'err')}
+  else ver=data[0].version}
+ catch(e){console.error(e);toast(_('Could not save to the server. Check your connection.','تعذّر الحفظ على الخادم. تحقق من الاتصال.'),'err')}
+ pushing=false;if(dirty){dirty=false;push()}}
+function remote(row){if(!S||!row||row.version<=ver||pushing||dirty)return;const t=(document.activeElement||{}).tagName||'';if(!$('#modal').hidden||/^(INPUT|SELECT|TEXTAREA)$/.test(t)){rq=row;return}adoptRow(row);render()}
+function flushRemote(){if(rq){const r=rq;rq=null;remote(r)}}
+async function poll(){if(!ui.user||!S||pushing)return;try{const{data}=await sb.from('app_state').select('version').eq('id',1).single();if(data&&data.version>ver)remote(await pullRow())}catch(e){}}
+let subbed=false;function subscribe(){if(subbed)return;subbed=true;try{sb.channel('swat-state').on('postgres_changes',{event:'UPDATE',schema:'public',table:'app_state'},p=>remote(p.new)).subscribe()}catch(e){}}
+async function loadProfiles(){try{const{data,error}=await sb.from('profiles').select('*').order('username');if(error)throw error;ui.profiles=data||[]}catch(e){ui.profiles=ui.profiles||[];toast(_('Could not load users.','تعذّر تحميل المستخدمين.'),'err')}}
+async function startSession(user){const{data:p,error}=await sb.from('profiles').select('*').eq('id',user.id).single();if(error||!p)throw error||new Error('no profile');
+ ui.user={id:user.id,username:p.username,role:p.role,memberId:p.member_id};const row=await pullRow();adoptRow(row);if(fresh&&canWrite()){fresh=false;push()}ui.route={n:'dash'};subscribe();render()}
 /* ---------- helpers ---------- */
 const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -184,12 +207,12 @@ const KEY='swat_ops_clean_v1',SES='swat_ops_clean_sess',LNG='swat_ops_lang';
 const ui={lang:'en',user:null,route:{n:'dash'},loading:false,boot:true,nav:false,
  mf:{q:'',unit:'',rank:'',status:'',arch:false,sort:'id',dir:1,page:1},
  cal:{y:new Date().getFullYear(),m:new Date().getMonth()},cview:'cal',ef:{type:'',status:''},rtab:'att',showArch:false,auf:'',fails:0,lock:0};
-let S=null,pending=null;
+let S=null,pending=null,sb=null,ver=0,pushing=false,dirty=false,fresh=false,rq=null;
 const _=(en,ar)=>ui.lang==='ar'?ar:en;
 const loc=()=>ui.lang==='ar'?'ar-u-nu-latn':'en-GB';
 function lsGet(k){try{return localStorage.getItem(k)}catch(e){return null}}
 function lsSet(k,v){try{localStorage.setItem(k,v);return true}catch(e){return false}}
-function save(){if(!lsSet(KEY,JSON.stringify(S)))toast(_('Storage is unavailable. Changes will be lost when you close this page.','التخزين غير متاح. ستفقد التغييرات عند إغلاق الصفحة.'),'err')}
+function save(){push()}
 const pad=n=>String(n).padStart(2,'0');
 const dstr=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
 const today=()=>dstr(new Date());
@@ -292,7 +315,7 @@ function canSee(m){return can('members.sensitive')||(ui.user&&ui.user.memberId==
 /* ---------- ui primitives ---------- */
 function toast(msg,kind){const t=document.createElement('div');t.className='toast'+(kind==='err'?' err':'');t.textContent=msg;$('#toasts').appendChild(t);setTimeout(()=>t.remove(),kind==='err'?6000:3200)}
 function openModal(html,wide){const m=$('#modal');m.innerHTML=`<div class="mback" data-act="mclose"></div><div class="mbox ${wide?'wide':''}" role="dialog" aria-modal="true">${html}</div>`;m.hidden=false;const f=m.querySelector('input,select,textarea,button.primary');if(f)setTimeout(()=>f.focus(),30)}
-function closeModal(){const m=$('#modal');m.hidden=true;m.innerHTML='';pending=null}
+function closeModal(){const m=$('#modal');m.hidden=true;m.innerHTML='';pending=null;flushRemote()}
 function ask(msg,ok,o={}){pending=ok;openModal(`<h3>${esc(o.title||_('Please confirm','يرجى التأكيد'))}</h3><p>${esc(msg)}</p><div class="mact"><button class="btn ghost" data-act="mclose">${_('Cancel','إلغاء')}</button><button class="btn ${o.danger===false?'primary':'danger'}" data-act="mok">${esc(o.label||_('Confirm','تأكيد'))}</button></div>`)}
 function fieldHtml(f,v){const id='f_'+f.k;let c='';
  if(f.t==='select')c=`<select id="${id}" name="${f.k}">${f.o.map(([val,l])=>`<option value="${esc(val)}"${String(v)===String(val)?' selected':''}>${esc(l)}</option>`).join('')}</select>`;
@@ -458,11 +481,11 @@ function pgAnn(){const list=S.anns.filter(a=>!!a.archived===ui.showArch).sort((p
  return`<div class="pghead"><h1>${_('Announcements','الإعلانات')}</h1><span class="sp"></span><label class="chk" style="margin:0"><input type="checkbox" data-in="annArch" ${ui.showArch?'checked':''}> ${_('Archived','المؤرشف')}</label>${can('ann.edit')?btn('addA',_('Publish announcement','نشر إعلان'),{c:'primary',i:'plus'}):''}</div>
  ${list.length?`<div class="grid">${list.map(a=>`<div class="panel ann ${a.priority}"><div class="row">${a.pinned?`<span title="${esc(_('Pinned','مثبت'))}">${ic('pin',16)}</span>`:''}<h3>${esc(a.title)}</h3>${badge(PRIO,a.priority)}<span class="sp"></span>${can('ann.edit')?`<button class="icon" title="${esc(_('Pin','تثبيت'))}" aria-label="${esc(_('Pin','تثبيت'))}" data-act="pinA" data-id="${a.id}">${ic('pin')}</button><button class="icon" aria-label="${esc(_('Edit','تعديل'))}" data-act="editA" data-id="${a.id}">${ic('edit')}</button><button class="icon" title="${esc(a.archived?_('Restore','استعادة'):_('Archive','أرشفة'))}" aria-label="${esc(a.archived?_('Restore','استعادة'):_('Archive','أرشفة'))}" data-act="arcA" data-id="${a.id}">${ic(a.archived?'back':'arch')}</button><button class="icon" aria-label="${esc(_('Delete','حذف'))}" data-act="delA" data-id="${a.id}">${ic('trash')}</button>`:''}</div><p>${esc(a.body)}</p><div class="sm mut" style="margin-top:8px">${esc(mname(a.author))} · ${fmtD(a.date)}</div></div>`).join('')}</div>`:empty(ui.showArch?_('No archived announcements','لا توجد إعلانات مؤرشفة'):_('No announcements yet','لا توجد إعلانات بعد'),can('ann.edit')?_('Publish the first notice for the department.','انشر أول إعلان للقسم.'):'')}`}
 /* admin */
-function pgAdmin(){if(ui.user.role!=='admin')return noAccess();const q=ui.auf.toLowerCase();const logs=S.audit.filter(a=>!q||(a.user+a.action+a.detail).toLowerCase().includes(q));
- return`<div class="pghead"><h1>${_('Administration & security','الإدارة والأمان')}</h1><span class="sp"></span>${btn('addUser',_('Add user','إضافة مستخدم'),{c:'primary',i:'plus'})}</div>
- <div class="note" style="margin-bottom:16px">${_('This build runs entirely in the browser: accounts, roles and the audit log are stored in this browser only. Connect Supabase for real authentication, server-side validation and shared storage before using it on a live server.','هذا الإصدار يعمل بالكامل داخل المتصفح: الحسابات والأدوار وسجل التدقيق محفوظة في هذا المتصفح فقط. اربطه بـ Supabase للمصادقة الحقيقية والتحقق من جهة الخادم والتخزين المشترك قبل استخدامه على خادم فعلي.')}</div>
- <h3 style="margin-bottom:10px">${_('Users & roles','المستخدمون والأدوار')}</h3><div class="tw" style="margin-bottom:22px"><table><thead><tr><th>${_('Username','اسم المستخدم')}</th><th>${_('Role','الدور')}</th><th>${_('Linked member','العضو المرتبط')}</th><th>${_('Actions','إجراءات')}</th></tr></thead><tbody>${S.users.map(u=>`<tr><td class="mono">${esc(u.username)}${u.username===ui.user.username?` <span class="badge">${_('you','أنت')}</span>`:''}</td><td><select data-in="urole" data-u="${esc(u.username)}" aria-label="${esc(_('Role','الدور'))}">${Object.keys(ROLES).map(k=>`<option value="${k}"${u.role===k?' selected':''}>${esc(lab(ROLES,k))}</option>`).join('')}</select></td><td>${u.memberId?esc(mname(u.memberId)):'—'}</td><td><button class="icon" aria-label="${esc(_('Change password','تغيير كلمة المرور'))}" title="${esc(_('Change password','تغيير كلمة المرور'))}" data-act="pwUser" data-u="${esc(u.username)}">${ic('lock')}</button>${u.username!==ui.user.username?`<button class="icon" aria-label="${esc(_('Delete user','حذف المستخدم'))}" data-act="delUser" data-u="${esc(u.username)}">${ic('trash')}</button>`:''}</td></tr>`).join('')}</tbody></table></div>
- <div class="row" style="margin-bottom:10px"><h3>${_('Audit log','سجل التدقيق')}</h3><span class="sp"></span><input type="search" data-in="auf" value="${esc(ui.auf)}" placeholder="${esc(_('Filter log','تصفية السجل'))}" style="width:220px"><button class="btn danger sm" data-act="resetAll">${_('Reset demo data','إعادة بيانات العرض')}</button></div>
+function pgAdmin(){if(ui.user.role!=='admin')return noAccess();const q=ui.auf.toLowerCase();const logs=S.audit.filter(a=>!q||(a.user+a.action+a.detail).toLowerCase().includes(q));const ps=ui.profiles||[];
+ return`<div class="pghead"><h1>${_('Administration & security','الإدارة والأمان')}</h1></div>
+ <div class="note" style="margin-bottom:16px">${_('Create accounts in Supabase (Authentication, then Add user) using the email username@swat.local. They appear here, and you set each role and linked member.','أنشئ الحسابات في Supabase (Authentication ثم Add user) بالبريد username@swat.local. تظهر هنا وتحدد دور كل حساب والعضو المرتبط به.')}</div>
+ <h3 style="margin-bottom:10px">${_('Users & roles','المستخدمون والأدوار')}</h3><div class="tw" style="margin-bottom:22px"><table><thead><tr><th>${_('Username','اسم المستخدم')}</th><th>${_('Role','الدور')}</th><th>${_('Linked member','العضو المرتبط')}</th></tr></thead><tbody>${ps.length?ps.map(u=>`<tr><td class="mono">${esc(u.username)}${u.id===ui.user.id?` <span class="badge">${_('you','أنت')}</span>`:''}</td><td><select data-in="urole" data-u="${esc(u.id)}" aria-label="${esc(_('Role','الدور'))}">${Object.keys(ROLES).map(k=>`<option value="${k}"${u.role===k?' selected':''}>${esc(lab(ROLES,k))}</option>`).join('')}</select></td><td><select data-in="umember" data-u="${esc(u.id)}" aria-label="${esc(_('Linked member','العضو المرتبط'))}"><option value="">—</option>${memberOpts().map(([v,l])=>`<option value="${esc(v)}"${u.member_id===v?' selected':''}>${esc(l)}</option>`).join('')}</select></td></tr>`).join(''):`<tr><td colspan="3">${empty(_('No accounts yet','لا توجد حسابات بعد'))}</td></tr>`}</tbody></table></div>
+ <div class="row" style="margin-bottom:10px"><h3>${_('Audit log','سجل التدقيق')}</h3><span class="sp"></span><input type="search" data-in="auf" value="${esc(ui.auf)}" placeholder="${esc(_('Filter log','تصفية السجل'))}" style="width:220px"><button class="btn danger sm" data-act="resetAll">${_('Erase all department data','مسح كل بيانات القسم')}</button></div>
  <div id="audtbl">${auditTable(logs)}</div>`}
 function auditTable(logs){return logs.length?`<div class="tw"><table><thead><tr><th>${_('Time','الوقت')}</th><th>${_('User','المستخدم')}</th><th>${_('Action','الإجراء')}</th><th>${_('Detail','التفاصيل')}</th></tr></thead><tbody>${logs.slice(0,100).map(a=>`<tr><td class="sm">${fmtTs(a.ts)}</td><td class="mono">${esc(a.user)}</td><td>${esc(a.action)}</td><td>${esc(a.detail)}</td></tr>`).join('')}</tbody></table></div>`:empty(_('No log entries match','لا توجد سجلات مطابقة'))}
 /* ---------- shell / login ---------- */
@@ -484,22 +507,23 @@ function loginView(){const demo=[['admin','Admin#2026'],['commander','Cmd#2026']
  </form></div></div>`}
 function render(){document.documentElement.lang=ui.lang;document.documentElement.dir=ui.lang==='ar'?'rtl':'ltr';const root=$('#root');
  if(ui.boot){root.innerHTML=`<div class="boot"><div><div class="spin"></div>${_('Starting command center…','جارٍ تشغيل مركز القيادة…')}</div></div>`;return}
+ if(ui.setup){root.innerHTML=`<div class="boot"><div style="max-width:420px;padding:20px"><b style="font:600 24px var(--head);color:var(--tx)">Setup required</b><p>Open the file, find <span class="mono">SB_URL</span> and <span class="mono">SB_KEY</span> at the top of the script, and paste your Supabase project URL and anon public key.</p></div></div>`;return}
  if(!ui.user){root.innerHTML=loginView();const f=$('#lform');f.addEventListener('submit',doLogin);return}
  const y=window.scrollY;root.innerHTML=shell();window.scrollTo(0,y)}
 async function doLogin(ev){ev.preventDefault();const f=ev.target,err=$('#lerr'),u=f.elements.u.value.trim().toLowerCase(),p=f.elements.p.value;
  if(Date.now()<ui.lock){err.textContent=_('Too many attempts. Try again in a few seconds.','محاولات كثيرة. حاول مرة أخرى بعد ثوانٍ.');return}
  if(!u||!p){err.textContent=_('Enter your username and password.','أدخل اسم المستخدم وكلمة المرور.');return}
- const b=$('#lbtn');b.disabled=true;b.textContent=_('Signing in…','جارٍ الدخول…');await new Promise(r=>setTimeout(r,450));
- const rec=S.users.find(x=>x.username===u);if(rec&&rec.hash===await sha(p)){ui.fails=0;ui.user={username:rec.username,role:rec.role,memberId:rec.memberId};try{sessionStorage.setItem(SES,rec.username)}catch(e){}ui.route={n:'dash'};log('Sign in','Signed in');save();render()}
- else{ui.fails++;if(ui.fails>=5){ui.lock=Date.now()+30000;ui.fails=0}err.textContent=_('Incorrect username or password.','اسم المستخدم أو كلمة المرور غير صحيحة.');b.disabled=false;b.textContent=_('Sign in','دخول')}}
+ const b=$('#lbtn');b.disabled=true;b.textContent=_('Signing in…','جارٍ الدخول…');
+ try{const{data,error}=await sb.auth.signInWithPassword({email:u.includes('@')?u:u+'@swat.local',password:p});if(error)throw error;ui.fails=0;await startSession(data.user)}
+ catch(e){ui.fails++;if(ui.fails>=5){ui.lock=Date.now()+30000;ui.fails=0}err.textContent=(e&&/fetch|network/i.test(e.message||''))?_('Network error. Check your connection.','خطأ في الشبكة. تحقق من الاتصال.'):_('Incorrect username or password.','اسم المستخدم أو كلمة المرور غير صحيحة.');b.disabled=false;b.textContent=_('Sign in','دخول')}}
 function go(n,id){ui.route={n,id};ui.nav=false;if(['admin','reports'].includes(n)&&!can(n==='admin'?'x':'reports.view')&&!(n==='admin'&&ui.user.role==='admin')){}
- ui.loading=true;render();setTimeout(()=>{ui.loading=false;render();window.scrollTo(0,0)},170)}
+ ui.loading=true;render();Promise.all([n==='admin'?loadProfiles():null,new Promise(r=>setTimeout(r,170))]).then(()=>{ui.loading=false;render();window.scrollTo(0,0)})}
 /* ---------- actions ---------- */
 const ACT={
  go:d=>go(d.n),goOrg:()=>go('org'),goUnit:d=>go('unit',d.id),viewM:d=>go('member',d.id),
  openNav:()=>{ui.nav=true;render()},closeNav:()=>{ui.nav=false;render()},
  lang:()=>{ui.lang=ui.lang==='ar'?'en':'ar';lsSet(LNG,ui.lang);render()},
- logout:()=>ask(_('Sign out of the Operations Center?','هل تريد تسجيل الخروج من مركز العمليات؟'),()=>{log('Sign out','Signed out');save();ui.user=null;try{sessionStorage.removeItem(SES)}catch(e){}render()},{label:_('Sign out','تسجيل الخروج'),danger:false}),
+ logout:()=>ask(_('Sign out of the Operations Center?','هل تريد تسجيل الخروج من مركز العمليات؟'),async()=>{try{await sb.auth.signOut()}catch(e){}ui.user=null;S=null;ui.profiles=null;render()},{label:_('Sign out','تسجيل الخروج'),danger:false}),
  fill:(d)=>{$('#lu').value=d.u;$('#lp').value=d.p},
  mclose:()=>closeModal(),mok:()=>{const f=pending;closeModal();if(f)f()},
  sort:d=>{const f=ui.mf;if(f.sort===d.k)f.dir*=-1;else{f.sort=d.k;f.dir=1}$('#mtbl').innerHTML=membersTable()},
@@ -541,16 +565,17 @@ const ACT={
   validate:v=>{const e={};if(v.username&&!/^[a-z0-9_]{3,20}$/.test(v.username))e.username=_('Use 3–20 lowercase letters, numbers or underscores.','استخدم 3–20 حرفاً صغيراً أو رقماً أو شرطة سفلية.');else if(S.users.some(u=>u.username===v.username))e.username=_('This username exists.','اسم المستخدم موجود.');if(v.password&&!(v.password.length>=8&&/[A-Za-z]/.test(v.password)&&/\d/.test(v.password)))e.password=_('Too weak.','كلمة المرور ضعيفة.');return e},
   onSave:async v=>{S.users.push({username:v.username,hash:await sha(v.password),role:v.role,memberId:v.memberId||null});log('User added',`Added user ${v.username} (${v.role})`);commit();toast(_('User added.','تمت إضافة المستخدم.'))}}),
  delUser:d=>ask(_(`Delete user ${d.u}?`,`حذف المستخدم ${d.u}؟`),()=>{S.users=S.users.filter(u=>u.username!==d.u);log('User deleted',`Deleted user ${d.u}`);commit()},{label:_('Delete','حذف')}),
- resetAll:()=>ask(_('Reset all data to the demo set? Everything you changed will be lost.','إعادة كل البيانات إلى بيانات العرض؟ ستفقد كل تغييراتك.'),async()=>{const keep=ui.user;S=await seedUsers(seed());ui.user=S.users.find(u=>u.username===keep.username)?keep:S.users[0];ui.user={username:ui.user.username,role:S.users.find(u=>u.username===ui.user.username).role,memberId:S.users.find(u=>u.username===ui.user.username).memberId};log('System','Demo data reset');commit();toast(_('Demo data restored.','تمت استعادة بيانات العرض.'))},{label:_('Reset','إعادة')})
+ resetAll:()=>ask(_('Erase ALL department data (members, events, announcements, log) for everyone? This cannot be undone.','مسح كل بيانات القسم (الأعضاء والأحداث والإعلانات والسجل) للجميع؟ لا يمكن التراجع.'),()=>{S=seed();log('System','Data erased');commit();toast(_('Data erased.','تم مسح البيانات.'))},{label:_('Erase','مسح')})
 };
 const IN={
  mq:v=>{ui.mf.q=v;ui.mf.page=1;$('#mtbl').innerHTML=membersTable()},mu:v=>{ui.mf.unit=v;ui.mf.page=1;$('#mtbl').innerHTML=membersTable()},mr:v=>{ui.mf.rank=v;ui.mf.page=1;$('#mtbl').innerHTML=membersTable()},ms:v=>{ui.mf.status=v;ui.mf.page=1;$('#mtbl').innerHTML=membersTable()},
  ma:(v,el)=>{ui.mf.arch=el.checked;ui.mf.page=1;render()},et:v=>{ui.ef.type=v;render()},es:v=>{ui.ef.status=v;render()},annArch:(v,el)=>{ui.showArch=el.checked;render()},
  auf:v=>{ui.auf=v;const q=v.toLowerCase();$('#audtbl').innerHTML=auditTable(S.audit.filter(a=>!q||(a.user+a.action+a.detail).toLowerCase().includes(q)))},
  assignU:(v,el)=>{if(!v)return;const m=M(v),u=U(el.dataset.uid);ask(_(`Move ${m.name} to ${u.name}?`,`نقل ${m.name} إلى ${un(u)}؟`),()=>{m.unit=u.id;log('Unit assignment',`Assigned ${m.id} to ${u.name}`);commit();toast(_('Member assigned.','تم تعيين العضو.'))},{label:_('Assign','تعيين'),danger:false});el.value=''},
- urole:(v,el)=>{const u=S.users.find(x=>x.username===el.dataset.u);if(!u||u.role===v)return;el.value=u.role;
-  if(u.role==='admin'&&S.users.filter(x=>x.role==='admin').length<2){toast(_('At least one Administrator is required.','يلزم وجود مدير نظام واحد على الأقل.'),'err');return}
-  ask(_(`Change ${u.username} to ${lab(ROLES,v)}?`,`تغيير ${u.username} إلى ${lab(ROLES,v)}؟`),()=>{log('Role change',`${u.username}: ${u.role} → ${v}`);u.role=v;if(ui.user.username===u.username)ui.user.role=v;commit();toast(_('Role updated.','تم تحديث الدور.'))},{label:_('Change role','تغيير الدور'),danger:false})}
+ urole:(v,el)=>{const u=(ui.profiles||[]).find(x=>x.id===el.dataset.u);if(!u||u.role===v)return;el.value=u.role;
+  if(u.role==='admin'&&ui.profiles.filter(x=>x.role==='admin').length<2){toast(_('At least one Administrator is required.','يلزم وجود مدير نظام واحد على الأقل.'),'err');return}
+  ask(_(`Change ${u.username} to ${lab(ROLES,v)}?`,`تغيير ${u.username} إلى ${lab(ROLES,v)}؟`),async()=>{const{error}=await sb.from('profiles').update({role:v}).eq('id',u.id);if(error){toast(_('Could not change the role.','تعذّر تغيير الدور.'),'err');return}log('Role change',`${u.username}: ${u.role} → ${v}`);u.role=v;if(ui.user.id===u.id)ui.user.role=v;commit();toast(_('Role updated.','تم تحديث الدور.'))},{label:_('Change role','تغيير الدور'),danger:false})},
+ umember:async(v,el)=>{const u=(ui.profiles||[]).find(x=>x.id===el.dataset.u);if(!u)return;const{error}=await sb.from('profiles').update({member_id:v||null}).eq('id',u.id);if(error){toast(_('Could not save.','تعذّر الحفظ.'),'err');el.value=u.member_id||'';return}u.member_id=v||null;if(ui.user.id===u.id)ui.user.memberId=v||null;log('Account link',`${u.username} linked to ${v||'none'}`);commit();toast(_('Saved.','تم الحفظ.'))}
 };
 document.addEventListener('click',e=>{const el=e.target.closest('[data-act]');if(!el)return;const h=ACT[el.dataset.act];if(h){if(el.tagName!=='INPUT')e.preventDefault();h(el.dataset,el)}});
 document.addEventListener('input',e=>{const el=e.target;if(el.dataset&&el.dataset.in&&IN[el.dataset.in])IN[el.dataset.in](el.value,el)});
@@ -558,11 +583,11 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#modal').hidden
 /* ---------- boot ---------- */
 async function boot(){
  const l=lsGet(LNG);ui.lang=l||((navigator.language||'').startsWith('ar')?'ar':'en');render();
- try{const raw=lsGet(KEY);if(raw)S=JSON.parse(raw);if(!S||S.v!==1||!S.users||!S.users.length)throw 0}catch(e){S=await seedUsers(seed());save()}
- let sess=null;try{sess=sessionStorage.getItem(SES)}catch(e){}
- await new Promise(r=>setTimeout(r,600));
- if(sess){const u=S.users.find(x=>x.username===sess);if(u)ui.user={username:u.username,role:u.role,memberId:u.memberId}}
- ui.boot=false;render()}
+ if(!window.supabase||!SB_URL||SB_URL.includes('YOUR-')){ui.boot=false;ui.setup=true;render();return}
+ sb=window.supabase.createClient(SB_URL,SB_KEY);
+ try{const{data}=await sb.auth.getSession();if(data&&data.session)await startSession(data.session.user)}catch(e){console.error(e);ui.user=null}
+ ui.boot=false;render();setInterval(poll,8000);
+ document.addEventListener('focusout',()=>setTimeout(()=>{if(rq&&$('#modal').hidden&&!/^(INPUT|SELECT|TEXTAREA)$/.test((document.activeElement||{}).tagName||''))flushRemote()},60))}
 boot();
 })();
 </script>
